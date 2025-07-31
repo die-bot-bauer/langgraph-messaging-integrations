@@ -1,9 +1,11 @@
 from langgraph.prebuilt import create_react_agent
 from langmem import create_manage_memory_tool, create_search_memory_tool
+from langgraph.prebuilt import create_react_agent
+from langchain_openai import ChatOpenAI
 
-
+model = ChatOpenAI("o4-mini")
 my_agent = create_react_agent(
-    "anthropic:claude-3-7-sonnet-latest",
+    model,
     tools=[
         create_manage_memory_tool("memories"),
         create_search_memory_tool("memories"),
