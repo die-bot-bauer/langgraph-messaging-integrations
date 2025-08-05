@@ -60,54 +60,41 @@ async def worker():
 async def _process_task(task: dict):
     event = task["event"]
     event_type = task["type"]
+    
     if event_type == "slack_message":
-        thread_id = _get_thread_id(
-            event.get("thread_ts") or event["ts"], event["channel"]
-        )
-        channel_id = event["channel"]
-        # This will connect to the loopback endpoint if not provided.
-        webhook = f"{config.DEPLOYMENT_URL}/callbacks/{thread_id}"
-
-        if (await _is_mention(event)) or _is_dm(event):
-            text_with_names = await _build_contextual_message(event)
-        else:
-            LOGGER.info("Skipping non-mention message")
+        # ==================== DEBUGGING TEST ====================
+        # We are bypassing LangGraph to see if a direct reply works.
+        
+        LOGGER.info("!!! DEBUGGING: Bypassing LangGraph, attempting direct reply.")
+        
+        webhook_url = config.SLACK_WEBHOOK_URL
+        if not webhook_url:
+            LOGGER.error("!!! DEBUGGING: SLACK_WEBHOOK_URL is not set.")
             return
 
-        LOGGER.info(
-            f"[{channel_id}].[{thread_id}] sending message to LangGraph: "
-            f"with webhook {webhook}: {text_with_names}"
-        )
+        # We need the thread_ts to reply in a thread
+        thread_ts = event.get("thread_ts") or event["ts"]
+        
+        payload = {
+            "text": "TEST MESSAGE :)",
+            "thread_ts": thread_ts
+        }
 
-        result = await LANGGRAPH_CLIENT.runs.create(
-            thread_id=thread_id,
-            assistant_id=config.ASSISTANT_ID,
-            input={
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": text_with_names,
-                    }
-                ]
-            },
-            config=GRAPH_CONFIG,
-            metadata={
-                "event": "slack",
-                "slack_event_type": "message",
-                "bot_user_id": config.BOT_USER_ID,
-                "slack_user_id": event["user"],
-                "channel_id": channel_id,
-                "channel": channel_id,
-                "thread_ts": event.get("thread_ts"),
-                "event_ts": event["ts"],
-                "channel_type": event.get("channel_type"),
-            },
-            multitask_strategy="interrupt",
-            if_not_exists="create",
-            webhook=webhook,
-        )
-        LOGGER.info(f"LangGraph run: {result}")
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(webhook_url, json=payload)
+                response.raise_for_status()
+            LOGGER.info(f"!!! DEBUGGING: Successfully sent direct test reply to thread {thread_ts}")
+        except Exception as e:
+            LOGGER.exception(f"!!! DEBUGGING: The direct reply failed: {e}")
+        # ========================================================
 
+    elif event_type == "callback":
+        # The old callback logic is here, we are ignoring it for this test.
+        LOGGER.info(f"Callback received, but we are in debug mode. Ignoring: {event}")
+    else:
+        raise ValueError(f"Unknown event type: {event_type}")
+"""
         #New event handler function --> Testing
     elif event_type == "callback":
         webhook_url = config.SLACK_WEBHOOK_URL
@@ -157,7 +144,7 @@ async def _process_task(task: dict):
             )
     else:
         raise ValueError(f"Unknown event type: {event_type}")
-
+"""
 
 async def handle_message(event: SlackMessageData, say: Callable, ack: Callable):
     LOGGER.info("Enqueuing handle_message task...")
