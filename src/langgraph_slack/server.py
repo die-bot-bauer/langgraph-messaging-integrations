@@ -108,19 +108,26 @@ async def _process_task(task: dict):
         )
         LOGGER.info(f"LangGraph run: {result}")
 
+        #New event handler function --> Testing
     elif event_type == "callback":
-        LOGGER.info(f"Processing LangGraph callback: {event['thread_id']}")
-        state_values = event["values"]
-        response_message = state_values["messages"][-1]
-        thread_ts = event["metadata"].get("thread_ts") or event["metadata"].get(
-            "event_ts"
-        )
-        channel_id = event["metadata"].get("channel") or config.SLACK_CHANNEL_ID
-        if not channel_id:
-            raise ValueError(
-                "Channel ID not found in event metadata and not set in environment"
-            )
+        LOGGER.info(f"Processing LangGraph callback: {event}")
+        
 
+        messages = event.get("messages", [])
+        if not messages:
+            LOGGER.error("Callback received but no messages found in the event.")
+            return 
+        
+        response_message = messages[-1]
+
+        metadata = event.get("metadata", {})
+        thread_ts = metadata.get("thread_ts") or metadata.get("event_ts")
+        channel_id = metadata.get("channel") or config.SLACK_CHANNEL_ID
+
+        if not channel_id:
+            LOGGER.error(f"Could not determine channel_id from metadata: {metadata}")
+            return 
+        
         await APP_HANDLER.app.client.chat_postMessage(
             channel=channel_id,
             thread_ts=thread_ts,
