@@ -21,3 +21,4 @@ ASSISTANT_ID = environ.get("LANGGRAPH_ASSISTANT_ID", "chat")
 CONFIG = environ.get("CONFIG") or "{}"
 DEPLOYMENT_URL = environ.get("DEPLOYMENT_URL")
 SLACK_CHANNEL_ID = environ.get("SLACK_CHANNEL_ID")
+SLACK_WEBHOOK_URL = environ.get("SLACK_WEBHOOK_URL")

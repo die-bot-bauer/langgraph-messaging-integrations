@@ -10,7 +10,7 @@ from fastapi import FastAPI, Request
 from langgraph_sdk import get_client
 from slack_bolt.adapter.fastapi.async_handler import AsyncSlackRequestHandler
 from slack_bolt.async_app import AsyncApp
-
+import httpx
 from langgraph_slack import config
 
 LOGGER = logging.getLogger(__name__)
@@ -110,36 +110,51 @@ async def _process_task(task: dict):
 
         #New event handler function --> Testing
     elif event_type == "callback":
-        LOGGER.info(f"Processing LangGraph callback: {event}")
-        
+        webhook_url = config.SLACK_WEBHOOK_URL
+        if not webhook_url:
+            LOGGER.error("SLACK_WEBHOOK_URL is not configured. Cannot send reply.")
+            return
 
+        LOGGER.info(f"Processing LangGraph callback to send to webhook: {event['thread_id']}")
+        
+        # Get the message content from the LangGraph response
         messages = event.get("messages", [])
         if not messages:
             LOGGER.error("Callback received but no messages found in the event.")
-            return 
-        
+            return
         response_message = messages[-1]
+        text_to_send = _clean_markdown(_get_text(response_message["content"]))
+
 
         metadata = event.get("metadata", {})
         thread_ts = metadata.get("thread_ts") or metadata.get("event_ts")
-        channel_id = metadata.get("channel") or config.SLACK_CHANNEL_ID
 
-        if not channel_id:
-            LOGGER.error(f"Could not determine channel_id from metadata: {metadata}")
-            return 
+        # This is the data we will send to the webhook URL
+        payload = {
+            "text": text_to_send,
+            "thread_ts": thread_ts  # This makes the message a reply in the thread
+        }
         
-        await APP_HANDLER.app.client.chat_postMessage(
-            channel=channel_id,
-            thread_ts=thread_ts,
-            text=_clean_markdown(_get_text(response_message["content"])),
-            metadata={
-                "event_type": "webhook",
-                "event_payload": {"thread_id": event["thread_id"]},
-            },
-        )
-        LOGGER.info(
-            f"[{channel_id}].[{thread_ts}] sent message to Slack for callback {event['thread_id']}"
-        )
+        # Remove thread_ts from payload if it's None, to avoid sending an empty key
+        if not payload["thread_ts"]:
+            del payload["thread_ts"]
+
+        try:
+            # Use httpx to send the POST request
+            async with httpx.AsyncClient() as client:
+                response = await client.post(webhook_url, json=payload)
+                response.raise_for_status() # This will raise an error for 4xx or 5xx responses
+
+            LOGGER.info(
+                f"Successfully sent message to Slack webhook for thread {thread_ts}"
+            )
+        except httpx.RequestError as exc:
+            LOGGER.exception(f"Error sending message to Slack webhook: {exc}")
+        except httpx.HTTPStatusError as exc:
+            LOGGER.exception(
+                f"Slack returned an error status: {exc.response.status_code} "
+                f"Body: {exc.response.text}"
+            )
     else:
         raise ValueError(f"Unknown event type: {event_type}")
 
