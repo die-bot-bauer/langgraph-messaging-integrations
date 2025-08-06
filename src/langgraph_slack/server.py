@@ -87,7 +87,7 @@ async def _process_task(task: dict):
         LOGGER.info(f"Invoking graph for thread_id: {thread_id}")
         await LANGGRAPH_CLIENT.runs.create(
             thread_id,
-            "__start__",
+            "chat",
             input={"messages": input_messages},
             config={
                 "configurable": GRAPH_CONFIG,
