@@ -55,12 +55,97 @@ async def worker():
             LOGGER.exception(f"Error in worker: {exc}")
         finally:
             TASK_QUEUE.task_done()
-
-
 async def _process_task(task: dict):
     event = task["event"]
     event_type = task["type"]
-    
+
+    if event_type == "slack_message":
+        # No changes to this part - it sets up all the necessary variables
+        thread_ts = event.get("thread_ts") or event["ts"]
+        channel = event["channel"]
+        thread_id = _get_thread_id(thread_ts, channel)
+
+        message_text = await _build_contextual_message(event)
+        
+        run_input = {"messages": [{"role": "user", "content": message_text}]}
+        run_config = {
+            "configurable": GRAPH_CONFIG,
+            "callback_url": f"{config.DEPLOYMENT_URL}/callbacks/{thread_id}",
+            "metadata": {
+                "thread_ts": thread_ts,
+                "event_ts": event.get("ts"),
+                "channel": channel,
+                "user": event.get("user")
+            }
+        }
+
+        # FIX: The logic below ensures the thread exists before adding a run to it.
+        try:
+            # First, try to create the run directly, assuming the thread exists.
+            LOGGER.info(f"Attempting to create run in thread: {thread_id}")
+            await LANGGRAPH_CLIENT.runs.create(thread_id, "chat", input=run_input, config=run_config)
+
+        except httpx.HTTPStatusError as e:
+            # If we get a 404 error, it means the thread doesn't exist yet.
+            if e.response.status_code == 404:
+                LOGGER.warning(f"Thread {thread_id} not found. Creating it now.")
+                
+                # Step 1: Create the thread on the LangGraph server.
+                await LANGGRAPH_CLIENT.threads.create(thread_id=thread_id)
+                LOGGER.info(f"Thread {thread_id} created successfully.")
+                
+                # Step 2: Retry creating the run, which will now succeed.
+                LOGGER.info(f"Retrying run creation for thread {thread_id}.")
+                await LANGGRAPH_CLIENT.runs.create(thread_id, "chat", input=run_input, config=run_config)
+            else:
+                # If it's a different HTTP error, we still want to see it.
+                LOGGER.exception("An unhandled HTTP error occurred during run creation.")
+                raise e
+        
+        LOGGER.info(f"Successfully triggered agent invocation for thread {thread_id}.")
+
+    elif event_type == "callback":
+        # No changes needed for the callback logic.
+        webhook_url = config.SLACK_WEBHOOK_URL
+        if not webhook_url:
+            LOGGER.error("SLACK_WEBHOOK_URL is not configured. Cannot send reply.")
+            return
+
+        LOGGER.info(f"Processing LangGraph callback to send to webhook: {event['thread_id']}")
+        
+        messages = event.get("messages", [])
+        if not messages:
+            LOGGER.error("Callback received but no messages found in the event.")
+            return
+        
+        response_message = messages[-1]
+        text_to_send = _clean_markdown(_get_text(response_message["content"]))
+        metadata = event.get("metadata", {})
+        thread_ts = metadata.get("thread_ts")
+        payload = {
+            "text": text_to_send,
+            "thread_ts": thread_ts
+        }
+        
+        if not payload["thread_ts"]:
+            del payload["thread_ts"]
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(webhook_url, json=payload)
+                response.raise_for_status()
+            LOGGER.info(f"Successfully sent message to Slack webhook for thread {thread_ts}")
+        except httpx.RequestError as exc:
+            LOGGER.exception(f"Error sending message to Slack webhook: {exc}")
+        except httpx.HTTPStatusError as exc:
+            LOGGER.exception(
+                f"Slack returned an error status: {exc.response.status_code} "
+                f"Body: {exc.response.text}"
+            )
+    else:
+        raise ValueError(f"Unknown event type: {event_type}")
+
+"""    
 async def _process_task(task: dict):
     event = task["event"]
     event_type = task["type"]
@@ -149,7 +234,7 @@ async def _process_task(task: dict):
     else:
         raise ValueError(f"Unknown event type: {event_type}")
         
-
+"""
 async def handle_message(event: SlackMessageData, say: Callable, ack: Callable):
     LOGGER.info("Enqueuing handle_message task...")
     nouser = not event.get("user")
