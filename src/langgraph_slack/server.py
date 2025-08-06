@@ -85,8 +85,21 @@ async def _process_task(task: dict):
                 response = await client.post(webhook_url, json=payload)
                 response.raise_for_status()
             LOGGER.info(f"!!! DEBUGGING: Successfully sent direct test reply to thread {thread_ts}")
+            # NOW WE TRY TO GET MESSAGE FROM GRAPH
+            LOGGER.info(f"Trying to get Messages: {event['thread_id']}")
+            messages = event.get("messages", [])
+            if not messages:
+                LOGGER.error("Callback received but no messages found in the event.")
+                return
+            response_message = messages[-1]
+            text_to_send = _clean_markdown(_get_text(response_message["content"]))
+            
+            
+            
+            
         except Exception as e:
             LOGGER.exception(f"!!! DEBUGGING: The direct reply failed: {e}")
+        
         # ========================================================
 
     elif event_type == "callback":
@@ -94,8 +107,7 @@ async def _process_task(task: dict):
         LOGGER.info(f"Callback received, but we are in debug mode. Ignoring: {event}")
     else:
         raise ValueError(f"Unknown event type: {event_type}")
-"""
-        #New event handler function --> Testing
+    """
     elif event_type == "callback":
         webhook_url = config.SLACK_WEBHOOK_URL
         if not webhook_url:
