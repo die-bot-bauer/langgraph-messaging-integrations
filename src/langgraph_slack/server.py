@@ -73,18 +73,20 @@ async def _process_task(task: dict):
         try:
             LOGGER.info(f"Starting run for thread {thread_id} and waiting for completion...")
             
-            # Start the run
             run = await LANGGRAPH_CLIENT.runs.create(thread_id, "chat", input=run_input, config=run_config)
             
-            # Poll until the run is complete
-            while run['status'] == 'running':
-                await asyncio.sleep(1) 
+            # FIX: Wait while the run is either 'pending' or 'running'.
+            while run['status'] in ('running', 'pending'):
+                await asyncio.sleep(1)
                 run = await LANGGRAPH_CLIENT.runs.get(thread_id, run['run_id'])
                 LOGGER.info(f"Polling... current run status: {run['status']}")
             
             LOGGER.info(f"Run {run['run_id']} finished with status: {run['status']}.")
 
-            # Get the final state of the thread
+            if run['status'] != 'success':
+                 LOGGER.error(f"Run failed or was interrupted. Final status: {run['status']}")
+                 return
+
             final_state = await LANGGRAPH_CLIENT.threads.get_state(thread_id)
             LOGGER.info("Successfully fetched final state from thread.")
 
@@ -103,7 +105,7 @@ async def _process_task(task: dict):
             async with httpx.AsyncClient() as client:
                 response = await client.post(webhook_url, json=payload)
                 response.raise_for_status()
-            LOGGER.info(f"Message sent successfully to Slack via polling method.")
+            LOGGER.info("Message sent successfully to Slack via polling method.")
 
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
