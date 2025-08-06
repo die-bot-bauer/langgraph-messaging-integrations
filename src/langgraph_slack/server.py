@@ -60,17 +60,20 @@ async def _process_task(task: dict):
     event_type = task["type"]
 
     if event_type == "slack_message":
-        # No changes to this part - it sets up all the necessary variables
         thread_ts = event.get("thread_ts") or event["ts"]
         channel = event["channel"]
         thread_id = _get_thread_id(thread_ts, channel)
 
         message_text = await _build_contextual_message(event)
+
+        # FIX: The callback_url MUST be a relative path for the "custom routes" feature.
+        # This tells LangGraph to route the callback internally, not over the internet.
+        callback_url = f"/callbacks/{thread_id}"
         
         run_input = {"messages": [{"role": "user", "content": message_text}]}
         run_config = {
             "configurable": GRAPH_CONFIG,
-            "callback_url": f"{config.DEPLOYMENT_URL}/callbacks/{thread_id}",
+            "callback_url": callback_url,
             "metadata": {
                 "thread_ts": thread_ts,
                 "event_ts": event.get("ts"),
@@ -79,33 +82,20 @@ async def _process_task(task: dict):
             }
         }
 
-        # FIX: The logic below ensures the thread exists before adding a run to it.
         try:
-            # First, try to create the run directly, assuming the thread exists.
-            LOGGER.info(f"Attempting to create run in thread: {thread_id}")
             await LANGGRAPH_CLIENT.runs.create(thread_id, "chat", input=run_input, config=run_config)
-
         except httpx.HTTPStatusError as e:
-            # If we get a 404 error, it means the thread doesn't exist yet.
             if e.response.status_code == 404:
-                LOGGER.warning(f"Thread {thread_id} not found. Creating it now.")
-                
-                # Step 1: Create the thread on the LangGraph server.
                 await LANGGRAPH_CLIENT.threads.create(thread_id=thread_id)
-                LOGGER.info(f"Thread {thread_id} created successfully.")
-                
-                # Step 2: Retry creating the run, which will now succeed.
-                LOGGER.info(f"Retrying run creation for thread {thread_id}.")
                 await LANGGRAPH_CLIENT.runs.create(thread_id, "chat", input=run_input, config=run_config)
             else:
-                # If it's a different HTTP error, we still want to see it.
                 LOGGER.exception("An unhandled HTTP error occurred during run creation.")
                 raise e
         
         LOGGER.info(f"Successfully triggered agent invocation for thread {thread_id}.")
 
     elif event_type == "callback":
-        # No changes needed for the callback logic.
+        # No changes are needed in the callback logic
         webhook_url = config.SLACK_WEBHOOK_URL
         if not webhook_url:
             LOGGER.error("SLACK_WEBHOOK_URL is not configured. Cannot send reply.")
@@ -413,14 +403,11 @@ async def _build_contextual_message(event: SlackMessageData) -> str:
 
     all_user_ids = set()
     for msg in included:
-        # FIX: Only add the user ID if the 'user' key exists in the message.
-        # This prevents adding the default "unknown" string to the set.
         if user_id := msg.get("user"):
             all_user_ids.add(user_id)
         
         all_user_ids.update(MENTION_REGEX.findall(msg["text"]))
 
-    # This part is fine, as the initial event is guaranteed to have a user.
     all_user_ids.add(event["user"])
     all_user_ids.update(MENTION_REGEX.findall(event["text"]))
 
@@ -428,7 +415,6 @@ async def _build_contextual_message(event: SlackMessageData) -> str:
 
     def format_message(msg: SlackMessageData) -> str:
         text = msg["text"]
-        # Use .get() here as well for safety, defaulting to "unknown" for formatting only.
         user_id = msg.get("user", "unknown")
 
         def repl(match: re.Match) -> str:
