@@ -55,176 +55,73 @@ async def worker():
             LOGGER.exception(f"Error in worker: {exc}")
         finally:
             TASK_QUEUE.task_done()
+
 async def _process_task(task: dict):
     event = task["event"]
     event_type = task["type"]
 
     if event_type == "slack_message":
+        # --- Setup ---
         thread_ts = event.get("thread_ts") or event["ts"]
         channel = event["channel"]
         thread_id = _get_thread_id(thread_ts, channel)
-
         message_text = await _build_contextual_message(event)
-
-        # FIX: The callback_url MUST be a relative path for the "custom routes" feature.
-        # This tells LangGraph to route the callback internally, not over the internet.
-        callback_url = f"/callbacks/{thread_id}"
-        
         run_input = {"messages": [{"role": "user", "content": message_text}]}
-        run_config = {
-            "configurable": GRAPH_CONFIG,
-            "callback_url": callback_url,
-            "metadata": {
-                "thread_ts": thread_ts,
-                "event_ts": event.get("ts"),
-                "channel": channel,
-                "user": event.get("user")
-            }
-        }
+        run_config = {"configurable": GRAPH_CONFIG}
 
+        # --- Polling Logic ---
         try:
-            await LANGGRAPH_CLIENT.runs.create(thread_id, "chat", input=run_input, config=run_config)
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                await LANGGRAPH_CLIENT.threads.create(thread_id=thread_id)
-                await LANGGRAPH_CLIENT.runs.create(thread_id, "chat", input=run_input, config=run_config)
-            else:
-                LOGGER.exception("An unhandled HTTP error occurred during run creation.")
-                raise e
-        
-        LOGGER.info(f"Successfully triggered agent invocation for thread {thread_id}.")
+            LOGGER.info(f"Starting run for thread {thread_id} and waiting for completion...")
+            
+            # Start the run
+            run = await LANGGRAPH_CLIENT.runs.create(thread_id, "chat", input=run_input, config=run_config)
+            
+            # Poll until the run is complete
+            while run['status'] == 'running':
+                await asyncio.sleep(1) 
+                run = await LANGGRAPH_CLIENT.runs.get(thread_id, run['run_id'])
+                LOGGER.info(f"Polling... current run status: {run['status']}")
+            
+            LOGGER.info(f"Run {run['run_id']} finished with status: {run['status']}.")
 
-    elif event_type == "callback":
-        # No changes are needed in the callback logic
-        webhook_url = config.SLACK_WEBHOOK_URL
-        if not webhook_url:
-            LOGGER.error("SLACK_WEBHOOK_URL is not configured. Cannot send reply.")
-            return
+            # Get the final state of the thread
+            final_state = await LANGGRAPH_CLIENT.threads.get_state(thread_id)
+            LOGGER.info("Successfully fetched final state from thread.")
 
-        LOGGER.info(f"Processing LangGraph callback to send to webhook: {event['thread_id']}")
-        
-        messages = event.get("messages", [])
-        if not messages:
-            LOGGER.error("Callback received but no messages found in the event.")
-            return
-        
-        response_message = messages[-1]
-        text_to_send = _clean_markdown(_get_text(response_message["content"]))
-        metadata = event.get("metadata", {})
-        thread_ts = metadata.get("thread_ts")
-        payload = {
-            "text": text_to_send,
-            "thread_ts": thread_ts
-        }
-        
-        if not payload["thread_ts"]:
-            del payload["thread_ts"]
+            # --- Send the result to Slack ---
+            messages = final_state["values"].get("messages", [])
+            if not messages:
+                LOGGER.error("Polling finished but no messages found in final state.")
+                return
 
-        try:
+            response_message = messages[-1]
+            text_to_send = _clean_markdown(_get_text(response_message["content"]))
+            payload = {"text": text_to_send, "thread_ts": thread_ts}
+            
+            webhook_url = config.SLACK_WEBHOOK_URL
+            LOGGER.info(f"Sending polled response to Slack webhook for thread {thread_ts}")
             async with httpx.AsyncClient() as client:
                 response = await client.post(webhook_url, json=payload)
                 response.raise_for_status()
-            LOGGER.info(f"Successfully sent message to Slack webhook for thread {thread_ts}")
-        except httpx.RequestError as exc:
-            LOGGER.exception(f"Error sending message to Slack webhook: {exc}")
-        except httpx.HTTPStatusError as exc:
-            LOGGER.exception(
-                f"Slack returned an error status: {exc.response.status_code} "
-                f"Body: {exc.response.text}"
-            )
-    else:
-        raise ValueError(f"Unknown event type: {event_type}")
+            LOGGER.info(f"Message sent successfully to Slack via polling method.")
 
-"""    
-async def _process_task(task: dict):
-    event = task["event"]
-    event_type = task["type"]
-
-    if event_type == "slack_message":
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                await LANGGRAPH_CLIENT.threads.create(thread_id=thread_id)
+                LOGGER.info("Thread not found, created it. Retrying the whole process...")
+                TASK_QUEUE.put_nowait(task)
+            else:
+                LOGGER.exception("An unhandled HTTP error occurred.")
+                raise e
         
-        
-        thread_ts = event.get("thread_ts") or event["ts"]
-        channel = event["channel"]
-        thread_id = _get_thread_id(thread_ts, channel)
-
-       
-        message_text = await _build_contextual_message(event)
-        input_messages = [{"role": "user", "content": message_text}]
-        callback_url = f"{config.DEPLOYMENT_URL}/callbacks/{thread_id}"
-        
-        metadata = {
-            "thread_ts": thread_ts,
-            "event_ts": event.get("ts"),
-            "channel": channel,
-            "user": event.get("user")
-        }
-
-        LOGGER.info(f"Invoking graph for thread_id: {thread_id}")
-        await LANGGRAPH_CLIENT.runs.create(
-            thread_id,
-            "chat",
-            input={"messages": input_messages},
-            config={
-                "configurable": GRAPH_CONFIG,
-                "callback_url": callback_url,
-                "metadata": metadata
-            },
-        )
-
     elif event_type == "callback":
-        # This block is for when LANGGRAPH calls back with a result.
-        # Its job is to extract the message and send it to Slack.
-        
-        webhook_url = config.SLACK_WEBHOOK_URL
-        if not webhook_url:
-            LOGGER.error("SLACK_WEBHOOK_URL is not configured. Cannot send reply.")
-            return
+        LOGGER.warning("Callback received but ignored during polling test.")
+        pass
 
-        LOGGER.info(f"Processing LangGraph callback to send to webhook: {event['thread_id']}")
-        
-        # 1. Get the list of messages from the LangGraph response
-        messages = event.get("messages", [])
-        if not messages:
-            LOGGER.error("Callback received but no messages found in the event.")
-            return
-        
-        # 2. The agent's final answer is the last message in the array
-        response_message = messages[-1]
-        text_to_send = _clean_markdown(_get_text(response_message["content"]))
-
-        # 3. Get the original thread_ts from the metadata we passed earlier
-        metadata = event.get("metadata", {})
-        thread_ts = metadata.get("thread_ts")
-
-        # 4. This is the data we will send to the Slack webhook URL
-        payload = {
-            "text": text_to_send,
-            "thread_ts": thread_ts  # This makes the message a reply in the thread
-        }
-        
-        if not payload["thread_ts"]:
-            del payload["thread_ts"]
-
-        try:
-            # 5. Use httpx to send the POST request to Slack
-            async with httpx.AsyncClient() as client:
-                response = await client.post(webhook_url, json=payload)
-                response.raise_for_status()  # Raise an error for 4xx or 5xx responses
-
-            LOGGER.info(
-                f"Successfully sent message to Slack webhook for thread {thread_ts}"
-            )
-        except httpx.RequestError as exc:
-            LOGGER.exception(f"Error sending message to Slack webhook: {exc}")
-        except httpx.HTTPStatusError as exc:
-            LOGGER.exception(
-                f"Slack returned an error status: {exc.response.status_code} "
-                f"Body: {exc.response.text}"
-            )
     else:
         raise ValueError(f"Unknown event type: {event_type}")
-        
-"""
+
+
 async def handle_message(event: SlackMessageData, say: Callable, ack: Callable):
     LOGGER.info("Enqueuing handle_message task...")
     nouser = not event.get("user")
