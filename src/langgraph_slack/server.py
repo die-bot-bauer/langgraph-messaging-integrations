@@ -61,54 +61,51 @@ async def _process_task(task: dict):
     event = task["event"]
     event_type = task["type"]
     
-    if event_type == "slack_message":
-        # ==================== DEBUGGING TEST ====================
-        # We are bypassing LangGraph to see if a direct reply works.
-        
-        LOGGER.info("!!! DEBUGGING: Bypassing LangGraph, attempting direct reply.")
-        
-        webhook_url = config.SLACK_WEBHOOK_URL
-        if not webhook_url:
-            LOGGER.error("!!! DEBUGGING: SLACK_WEBHOOK_URL is not set.")
-            return
+async def _process_task(task: dict):
+    event = task["event"]
+    event_type = task["type"]
 
-        # We need the thread_ts to reply in a thread
-        thread_ts = event.get("thread_ts") or event["ts"]
+    if event_type == "slack_message":
+        # This block is for when a NEW message from Slack comes in.
+        # Its job is to invoke the LangGraph agent.
         
-        payload = {
-            "text": "TEST MESSAGE :)",
-            "thread_ts": thread_ts
+        # 1. Get thread and channel info to create a unique ID
+        thread_ts = event.get("thread_ts") or event["ts"]
+        channel = event["channel"]
+        thread_id = _get_thread_id(thread_ts, channel)
+
+        # 2. Build the input message for the agent
+        message_text = await _build_contextual_message(event)
+        input_messages = [{"role": "user", "content": message_text}]
+
+        # 3. Define the URL where LangGraph will send its response
+        # This URL points back to our own server's /callbacks/{thread_id} endpoint
+        callback_url = f"{config.BASE_URL}/callbacks/{thread_id}"
+        
+        # 4. Pass metadata through the graph so we know which thread to reply to
+        metadata = {
+            "thread_ts": thread_ts,
+            "event_ts": event.get("ts"),
+            "channel": channel,
+            "user": event.get("user")
         }
 
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(webhook_url, json=payload)
-                response.raise_for_status()
-            LOGGER.info(f"!!! DEBUGGING: Successfully sent direct test reply to thread {thread_ts}")
-            # NOW WE TRY TO GET MESSAGE FROM GRAPH
-            LOGGER.info(f"Trying to get Messages: {event['thread_id']}")
-            messages = event.get("messages", [])
-            if not messages:
-                LOGGER.error("Callback received but no messages found in the event.")
-                return
-            response_message = messages[-1]
-            text_to_send = _clean_markdown(_get_text(response_message["content"]))
-            
-            
-            
-            
-        except Exception as e:
-            LOGGER.exception(f"!!! DEBUGGING: The direct reply failed: {e}")
-        
-        # ========================================================
+        LOGGER.info(f"Invoking graph for thread_id: {thread_id}")
+        await LANGGRAPH_CLIENT.runs.create(
+            thread_id,
+            "__start__",  # The default entrypoint for the agent
+            input={"messages": input_messages},
+            config={
+                "configurable": GRAPH_CONFIG,
+                "callback_url": callback_url,
+                "metadata": metadata  # Pass our metadata to the callback
+            },
+        )
 
     elif event_type == "callback":
-        # The old callback logic is here, we are ignoring it for this test.
-        LOGGER.info(f"Callback received, but we are in debug mode. Ignoring: {event}")
-    else:
-        raise ValueError(f"Unknown event type: {event_type}")
-    """
-    elif event_type == "callback":
+        # This block is for when LANGGRAPH calls back with a result.
+        # Its job is to extract the message and send it to Slack.
+        
         webhook_url = config.SLACK_WEBHOOK_URL
         if not webhook_url:
             LOGGER.error("SLACK_WEBHOOK_URL is not configured. Cannot send reply.")
@@ -116,33 +113,34 @@ async def _process_task(task: dict):
 
         LOGGER.info(f"Processing LangGraph callback to send to webhook: {event['thread_id']}")
         
-        # Get the message content from the LangGraph response
+        # 1. Get the list of messages from the LangGraph response
         messages = event.get("messages", [])
         if not messages:
             LOGGER.error("Callback received but no messages found in the event.")
             return
+        
+        # 2. The agent's final answer is the last message in the array
         response_message = messages[-1]
         text_to_send = _clean_markdown(_get_text(response_message["content"]))
 
-
+        # 3. Get the original thread_ts from the metadata we passed earlier
         metadata = event.get("metadata", {})
-        thread_ts = metadata.get("thread_ts") or metadata.get("event_ts")
+        thread_ts = metadata.get("thread_ts")
 
-        # This is the data we will send to the webhook URL
+        # 4. This is the data we will send to the Slack webhook URL
         payload = {
             "text": text_to_send,
             "thread_ts": thread_ts  # This makes the message a reply in the thread
         }
         
-        # Remove thread_ts from payload if it's None, to avoid sending an empty key
         if not payload["thread_ts"]:
             del payload["thread_ts"]
 
         try:
-            # Use httpx to send the POST request
+            # 5. Use httpx to send the POST request to Slack
             async with httpx.AsyncClient() as client:
                 response = await client.post(webhook_url, json=payload)
-                response.raise_for_status() # This will raise an error for 4xx or 5xx responses
+                response.raise_for_status()  # Raise an error for 4xx or 5xx responses
 
             LOGGER.info(
                 f"Successfully sent message to Slack webhook for thread {thread_ts}"
@@ -156,7 +154,7 @@ async def _process_task(task: dict):
             )
     else:
         raise ValueError(f"Unknown event type: {event_type}")
-"""
+        
 
 async def handle_message(event: SlackMessageData, say: Callable, ack: Callable):
     LOGGER.info("Enqueuing handle_message task...")
