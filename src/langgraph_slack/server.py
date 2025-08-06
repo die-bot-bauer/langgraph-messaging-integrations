@@ -399,11 +399,28 @@ async def _build_contextual_message(event: SlackMessageData) -> str:
             break
         included.append(msg)
 
+async def _build_contextual_message(event: SlackMessageData) -> str:
+    """Build a message with thread context, using display names for all users."""
+    thread_ts = event.get("thread_ts") or event["ts"]
+    channel_id = event["channel"]
+
+    history = await _fetch_thread_history(channel_id, thread_ts)
+    included = []
+    for msg in reversed(history):
+        if msg.get("bot_id") == config.BOT_USER_ID:
+            break
+        included.append(msg)
+
     all_user_ids = set()
     for msg in included:
-        all_user_ids.add(msg.get("user", "unknown"))
+        # FIX: Only add the user ID if the 'user' key exists in the message.
+        # This prevents adding the default "unknown" string to the set.
+        if user_id := msg.get("user"):
+            all_user_ids.add(user_id)
+        
         all_user_ids.update(MENTION_REGEX.findall(msg["text"]))
 
+    # This part is fine, as the initial event is guaranteed to have a user.
     all_user_ids.add(event["user"])
     all_user_ids.update(MENTION_REGEX.findall(event["text"]))
 
@@ -411,6 +428,7 @@ async def _build_contextual_message(event: SlackMessageData) -> str:
 
     def format_message(msg: SlackMessageData) -> str:
         text = msg["text"]
+        # Use .get() here as well for safety, defaulting to "unknown" for formatting only.
         user_id = msg.get("user", "unknown")
 
         def repl(match: re.Match) -> str:
