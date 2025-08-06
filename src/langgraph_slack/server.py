@@ -66,23 +66,17 @@ async def _process_task(task: dict):
     event_type = task["type"]
 
     if event_type == "slack_message":
-        # This block is for when a NEW message from Slack comes in.
-        # Its job is to invoke the LangGraph agent.
         
-        # 1. Get thread and channel info to create a unique ID
+        
         thread_ts = event.get("thread_ts") or event["ts"]
         channel = event["channel"]
         thread_id = _get_thread_id(thread_ts, channel)
 
-        # 2. Build the input message for the agent
+       
         message_text = await _build_contextual_message(event)
         input_messages = [{"role": "user", "content": message_text}]
-
-        # 3. Define the URL where LangGraph will send its response
-        # This URL points back to our own server's /callbacks/{thread_id} endpoint
-        callback_url = f"{config.BASE_URL}/callbacks/{thread_id}"
+        callback_url = f"{config.DEPLOYMENT_URL}/callbacks/{thread_id}"
         
-        # 4. Pass metadata through the graph so we know which thread to reply to
         metadata = {
             "thread_ts": thread_ts,
             "event_ts": event.get("ts"),
@@ -93,12 +87,12 @@ async def _process_task(task: dict):
         LOGGER.info(f"Invoking graph for thread_id: {thread_id}")
         await LANGGRAPH_CLIENT.runs.create(
             thread_id,
-            "__start__",  # The default entrypoint for the agent
+            "__start__",
             input={"messages": input_messages},
             config={
                 "configurable": GRAPH_CONFIG,
                 "callback_url": callback_url,
-                "metadata": metadata  # Pass our metadata to the callback
+                "metadata": metadata
             },
         )
 
