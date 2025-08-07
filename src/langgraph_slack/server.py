@@ -56,12 +56,13 @@ async def worker():
         finally:
             TASK_QUEUE.task_done()
 
+
+# Dont Touch this Function cause its working!!
 async def _process_task(task: dict):
     event = task["event"]
     event_type = task["type"]
 
     if event_type == "slack_message":
-        # --- Setup ---
         thread_ts = event.get("thread_ts") or event["ts"]
         channel = event["channel"]
         thread_id = _get_thread_id(thread_ts, channel)
@@ -69,13 +70,11 @@ async def _process_task(task: dict):
         run_input = {"messages": [{"role": "user", "content": message_text}]}
         run_config = {"configurable": GRAPH_CONFIG}
 
-        # --- Polling Logic ---
+
         try:
             LOGGER.info(f"Starting run for thread {thread_id} and waiting for completion...")
             
-            run = await LANGGRAPH_CLIENT.runs.create(thread_id, "chat", input=run_input, config=run_config)
-            
-            # FIX: Wait while the run is either 'pending' or 'running'.
+            run = await LANGGRAPH_CLIENT.runs.create(thread_id, config.ASSISTANT_ID, input=run_input, config=run_config)
             while run['status'] in ('running', 'pending'):
                 await asyncio.sleep(1)
                 run = await LANGGRAPH_CLIENT.runs.get(thread_id, run['run_id'])
@@ -90,7 +89,7 @@ async def _process_task(task: dict):
             final_state = await LANGGRAPH_CLIENT.threads.get_state(thread_id)
             LOGGER.info("Successfully fetched final state from thread.")
 
-            # --- Send the result to Slack ---
+            #Get result messages to show in SLACK Channel
             messages = final_state["values"].get("messages", [])
             if not messages:
                 LOGGER.error("Polling finished but no messages found in final state.")

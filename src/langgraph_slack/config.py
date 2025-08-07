@@ -17,7 +17,7 @@ else:
 
 
 LANGGRAPH_URL = environ.get("LANGGRAPH_URL")
-ASSISTANT_ID = environ.get("LANGGRAPH_ASSISTANT_ID", "chat")
+ASSISTANT_ID = environ.get("LANGGRAPH_ASSISTANT_ID")
 CONFIG = environ.get("CONFIG") or "{}"
 DEPLOYMENT_URL = environ.get("DEPLOYMENT_URL")
 SLACK_CHANNEL_ID = environ.get("SLACK_CHANNEL_ID")
