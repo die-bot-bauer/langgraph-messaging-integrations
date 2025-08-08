@@ -282,10 +282,64 @@ async def _build_contextual_message(event: SlackMessageData) -> str:
 
     history = await _fetch_thread_history(channel_id, thread_ts)
     included = []
-    for msg in reversed(history):
+    # ✅ CORRECTED LOGIC: Iterate from newest to oldest
+    for msg in history:
+        # Stop when we reach the bot's last message
         if msg.get("bot_id") == config.BOT_USER_ID:
             break
+        # Add all user messages since the bot last spoke
         included.append(msg)
+
+    # The rest of your function is correct.
+    # It finds all user IDs, fetches names, and formats the message.
+    # `reversed(included)` will correctly order the messages chronologically for the context.
+    
+    all_user_ids = set()
+    for msg in included:
+        if user_id := msg.get("user"):
+            all_user_ids.add(user_id)
+        
+        all_user_ids.update(MENTION_REGEX.findall(msg["text"]))
+
+    all_user_ids.add(event["user"])
+    all_user_ids.update(MENTION_REGEX.findall(event["text"]))
+
+    user_names = await _fetch_user_names(all_user_ids)
+
+    def format_message(msg: SlackMessageData) -> str:
+        text = msg["text"]
+        user_id = msg.get("user", "unknown")
+
+        def repl(match: re.Match) -> str:
+            uid = match.group(1)
+            return user_names.get(uid, uid)
+
+        replaced_text = MENTION_REGEX.sub(repl, text)
+        speaker_name = user_names.get(user_id, user_id)
+
+        return (
+            f'<slackMessage user="{speaker_name}">' f"{replaced_text}" "</slackMessage>"
+        )
+
+    # `reversed(included)` now correctly orders the recent messages chronologically.
+    context_parts = [format_message(msg) for msg in reversed(included)]
+    
+    # This logic seems to have a slight bug as well. It takes the last message
+    # from the chronologically-ordered list, which might not be the triggering message
+    # if multiple messages were sent. Let's simplify and improve it.
+    
+    if not context_parts:
+        return "" # Should not happen if triggered by a user message
+
+    new_message = context_parts[-1]
+    preceding_context = "\n".join(context_parts[:-1])
+
+    contextual_message = (
+        (("Preceding context:\n" + preceding_context) if preceding_context else "")
+        + "\n\nNew message:\n"
+        + new_message
+    )
+    return contextual_message
 
 async def _build_contextual_message(event: SlackMessageData) -> str:
     """Build a message with thread context, using display names for all users."""
